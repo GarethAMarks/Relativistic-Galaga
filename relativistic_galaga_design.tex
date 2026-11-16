@@ -1,0 +1,357 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  framesep=3pt,
+  xleftmargin=3pt,
+  xrightmargin=3pt,
+  showstringspaces=false,
+  keywordstyle=\bfseries,
+  language=C++
+}
+
+\newcommand{\vb}[1]{\mathbf{#1}}
+\newcommand{\uv}[1]{\hat{\mathbf{#1}}}
+\newcommand{\pperp}{{\perp}}
+\newcommand{\ppar}{{\parallel}}
+\newcommand{\decision}[1]{\par\smallskip\noindent\textbf{Decision.} #1\par\smallskip}
+\newcommand{\caveat}[1]{\par\smallskip\noindent\textbf{Caveat.} #1\par\smallskip}
+\newcommand{\milestone}[1]{\textbf{#1}}
+
+\title{\textbf{Relativistic Galaga}\\[2pt]\large Physics \& Implementation Spec\\[2pt]\normalsize Special-Relativistic Kinematics for a Retro Arcade Shooter, v1.0}
+\author{Design document — ready for implementation}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\section{Introduction and Design Decisions}
+
+The game is a classical vertical-scrolling shooter in the spirit of \emph{Galaga}: a player ship near the bottom of the screen strafes left and right, fires a cannon upward, and destroys descending enemy formations, viewed from directly overhead (top-down 2D), not first-person. A single toggle switches between:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Newtonian mode.} Ordinary Galilean kinematics. Projectile lab-frame velocity is the vector sum of the ship's velocity and a fixed muzzle velocity. This is the ``control'' condition students already have intuition for.
+  \item \textbf{Lorentzian mode.} Two things change: (1) cannon bolts always propagate at exactly $c$ in whatever frame measures them (they behave like pulses of light, not bullets), and (2) every rendered quantity -- enemy spacing, sprite shapes, animation rates, bolt and engine color, on-screen clocks -- is computed as it would be \emph{measured by an observer riding with the ship}, i.e.\ in the ship's instantaneous rest frame $S'$.
+\end{itemize}
+
+This document is finalized for implementation. The decisions below are settled; a coding agent should treat them as requirements, not options to reconsider. Section~\ref{sec:architecture} gives the concrete software plan.
+
+\subsection{Prior art}
+
+The closest existing project is MIT Game Lab's \emph{A Slower Speed of Light} (2012), a first-person 3D game built on their open-source \textbf{OpenRelativity} Unity toolkit, in which the speed of light is gradually lowered toward human walking speed as the player collects orbs, making aberration, Doppler shift, the searchlight (relativistic beaming) effect, Lorentz contraction, time dilation, and finite-light-travel-time (``runtime'') distortion all visible in turn. We borrow one design trick directly:
+
+\decision{\textbf{Tune $c$, not the ship.} Define an in-game constant $c_{\mathrm{game}}$ (in pixels/second or game-units/second) of the same order as attainable ship speeds, and expose it to the player as a ``warp throttle.'' As $\beta = v/c_{\mathrm{game}}$ sweeps from $0$ toward $1$, every effect below becomes dramatic and controllable. From here on, ``$c$'' always means $c_{\mathrm{game}}$.}
+
+\subsection{Measured effects only -- and why that's not just a simplification}
+\label{sec:measured-vs-visual}
+
+There are two different notions of ``what a fast-moving observer sees'':
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Measured (coordinate) effects.} What you get from the observer's own frame's notion of \emph{simultaneity} -- ``the length of the rod is the distance between its two ends' positions at one instant of \emph{my} time.'' This is the textbook length contraction and time dilation.
+  \item \textbf{Visual (optical) effects.} What actually arrives at a camera at one instant, mixing light emitted at different earlier times from different parts of an object because farther light takes longer to arrive. This produces the Terrell--Penrose rotation: a fast sphere still looks like a sphere, not a squashed ellipsoid.
+\end{itemize}
+
+\decision{\textbf{Measured effects only, permanently, not just for v1.} This game renders an overhead, god's-eye schematic of the ship frame's coordinate system -- there is no camera or eye position for light rays to converge on in the first place, so the optical/Terrell--Penrose construction (which is inherently a first-person, single-viewpoint concept) doesn't apply to what we're drawing. The ``measured, simultaneity-based snapshot'' isn't a computational shortcut standing in for the ``real'' visual answer -- it \emph{is} the correct thing to compute for a top-down view of a Lorentz frame. Visual/optical rendering is out of scope, not a deferred stretch goal.}
+
+\section{Reference Frames and Notation}
+\label{sec:frames}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Lab frame $S$.} The frame in which the game's ordinary logic lives: enemy formation paths, spawn timers, obstacle motion, and the background starfield all have simple, ``ordinary-looking'' prescribed trajectories $\vb{r}_i(t)$ in $S$, exactly as they would in a non-relativistic game. The simulation layer never needs to know which render mode is active (Section~\ref{sec:architecture}).
+  \item \textbf{Ship frame $S'$.} The instantaneous inertial rest frame of the player's ship at lab time $t$, moving at velocity $\vb{v}(t)$ relative to $S$. Because the ship can accelerate (throttle up, strafe), $S'$ is only exactly valid frame-by-frame; we use the standard \emph{instantaneous rest frame} approximation (valid as long as $\vb v(t)$ does not change too fast relative to the light-crossing time of the visible arena -- Section~\ref{sec:caveats}).
+  \item \textbf{Coordinates.} A 2D game plane $\vb r = (x,y)$, with $y$ ``up-screen'' (the ship's nominal heading and cannon axis) and $x$ across the screen. The ship's velocity $\vb v(t) = (v_x, v_y)$ is set by throttle and strafe input, with $|\vb v(t)| < c$ enforced at all times.
+  \item \textbf{Boost kinematics.} $v = |\vb v(t)|$, $\uv n(t) = \vb v(t)/v$, $\beta = v/c$, $\gamma = 1/\sqrt{1-\beta^2}$.
+  \item \textbf{Parallel/perpendicular split.} For any lab-frame vector $\vb A$: $\vb A_\ppar = (\vb A\cdot\uv n)\,\uv n$, $\vb A_\pperp = \vb A - \vb A_\ppar$.
+\end{itemize}
+
+\section{The Lorentz Transformation}
+\label{sec:lorentz}
+
+For a boost of speed $v$ along direction $\uv n$, an event with lab-frame position $\vb r$ and time $t$ has ship-frame coordinates
+\begin{align}
+  \vb r'_\ppar &= \gamma\left(\vb r_\ppar - \vb v\, t\right), \label{eq:lorentz-rpar}\\
+  \vb r'_\pperp &= \vb r_\pperp, \label{eq:lorentz-rperp}\\
+  t' &= \gamma\left(t - \frac{\vb v\cdot\vb r}{c^2}\right). \label{eq:lorentz-t}
+\end{align}
+The inverse transform swaps primed/unprimed quantities and $\vb v \to -\vb v$. This is the single computational core everything else reduces to. When $\uv n = \uv y$ (pure forward boost) this collapses to $x'=x$, $y'=\gamma(y-vt)$, $t'=\gamma(t-vy/c^2)$.
+
+\section{Length Contraction}
+\label{sec:contraction}
+
+An object at rest in the lab frame with proper length $L_0$ along $\uv n$, measured simultaneously in $S'$, has
+\begin{equation}
+  L' = \frac{L_0}{\gamma} \quad\text{(along the boost axis)}, \qquad L'_\pperp = L_{0,\pperp} \quad\text{(unchanged transversely)}.
+\end{equation}
+
+\paragraph{Sprite shape map.} Every extended lab-frame object (sprite, formation, starfield cell) is a cloud of offsets $\Delta\vb r$ from a reference point. The apparent shape in the ship frame:
+\begin{equation}
+  \Delta\vb r'_{\text{shape}} = \Delta\vb r_\pperp + \frac{1}{\gamma}\,\Delta\vb r_\ppar. \label{eq:shape-map}
+\end{equation}
+A cheap, time-independent squash, applied once per frame to sprite geometry.
+
+\section{Time Dilation}
+\label{sec:dilation}
+
+A clock at rest in the lab frame (enemy weapon charge-up, spawn countdown, engine-pulse animation) ticks proper time $\Delta\tau_{\text{lab}}$; the ship observer reads
+\begin{equation}
+  \Delta t' = \gamma\, \Delta\tau_{\text{lab}}.
+\end{equation}
+Every lab-authored timer and animation should play back slower by a global factor $\gamma$ -- one scale factor for all lab-frame objects.
+
+The ship's own onboard chronometer, since $\beta(t)$ can vary:
+\begin{equation}
+  \tau_{\text{ship}}(t) = \int_0^{t} \frac{dt''}{\gamma(t'')}.
+  \label{eq:proper-time-integral}
+\end{equation}
+In a fixed-timestep loop: \texttt{shipProperTime += dt / gamma;} accumulated every tick.
+
+\decision{Display $t_{\text{lab}}$ (mission clock) and $\tau_{\text{ship}}$ (Eq.~\eqref{eq:proper-time-integral}, pilot's wristwatch) side by side on the HUD.}
+
+\section{Relativistic Velocity Addition and Aberration -- Two Uses Only}
+\label{sec:aberration}
+
+For an object at lab-frame velocity $\vb u$, the velocity in $S'$:
+\begin{align}
+  u'_\ppar &= \frac{u_\ppar - v}{1 - \vb u\cdot\vb v/c^2}, \qquad
+  \vb u'_\pperp = \frac{\vb u_\pperp}{\gamma\left(1 - \vb u\cdot\vb v/c^2\right)}.
+\end{align}
+Setting $u=c$ and writing the result in terms of the angle $\theta$ from $\uv n$ gives the \textbf{aberration formula}:
+\begin{equation}
+  \cos\theta' = \frac{\cos\theta - \beta}{1-\beta\cos\theta}, \qquad
+  \cos\theta = \frac{\cos\theta' + \beta}{1+\beta\cos\theta'}.
+  \label{eq:aberration}
+\end{equation}
+
+\decision{Aberration is used in \emph{exactly two} places in this implementation, and nowhere else:
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Firing direction.} Converting the player's ship-frame aim angle $\theta'_{\text{aim}}$ into the lab-frame direction $\theta_{\text{fire}}$ the bolt actually travels in the simulation, via Eq.~\eqref{eq:aberration}, once per shot.
+  \item \textbf{Starfield skybox.} The background starfield is treated as being at effectively infinite distance, so only direction (not position/parallax) matters. Each star's lab-frame angle is remapped to a ship-frame angle via Eq.~\eqref{eq:aberration} every frame -- cheap, and correctly reproduces the forward-bunching ``headlight'' effect for a true skybox.
+\end{enumerate}
+Aberration is \emph{not} used to reposition foreground gameplay objects (enemies, obstacles, in-flight bolts) -- those get the full coordinate transform of Section~\ref{sec:algorithm}, which already produces the equivalent bunching as an emergent consequence of transforming position \emph{and} time together, with correct relative spacing for objects at finite, gameplay-relevant distance.}
+
+\section{Relativistic Doppler Shift}
+\label{sec:doppler}
+
+\begin{equation}
+  f_{\text{obs}} = \frac{f_0}{\gamma\left(1-\beta\cos\theta_{\text{obs}}\right)}, \qquad D \equiv \frac{f_{\text{obs}}}{f_0} = \frac{1}{\gamma(1-\beta\cos\theta_{\text{obs}})}.
+  \label{eq:doppler-general}
+\end{equation}
+where $\theta_{\text{obs}}$ is the angle, in the observer's frame, between the incoming ray and the direction of relative motion. Special cases: head-on ($\theta_{\text{obs}}=0$) gives $f_{\text{obs}}=f_0\sqrt{(1+\beta)/(1-\beta)}$ (blueshift); receding ($\theta_{\text{obs}}=\pi$) gives $f_{\text{obs}}=f_0\sqrt{(1-\beta)/(1+\beta)}$ (redshift); transverse ($\theta_{\text{obs}}=\pi/2$) gives $f_{\text{obs}}=f_0/\gamma$ -- purely relativistic, no acoustic-Doppler analog, worth a HUD tooltip for students who already know the ambulance-siren case.
+
+\subsection{Enemies and starfield (per-frame)}
+The lab frame is where enemies/obstacles/starfield are genuinely at rest, so Eq.~\eqref{eq:doppler-general} applies directly each frame with $\beta$ = ship speed and $\theta_{\text{obs}}$ = each object's angle from $\uv n$ (from the aberration-remapped position for stars; from the transformed position, Section~\ref{sec:algorithm}, for foreground objects). This is the default, unambiguous case: things ahead blueshift, things behind redshift.
+
+\subsection{Bolt color -- finalized as ``what the target would see''}
+\label{sec:bolt-doppler}
+A bolt emitted at the ship's own steady velocity shows \emph{no} self-Doppler shift to the pilot who fired it (same logic as an astronaut seeing no shift from a lamp they're holding). We are not rendering the pilot's own optical view anyway (Section~\ref{sec:measured-vs-visual}), so this isn't the relevant quantity.
+
+\decision{Each bolt is tinted, once, at the moment it spawns, by the Doppler factor a stationary lab-frame observer positioned along its flight path would measure -- i.e.\ ``the color your target sees,'' not ``the color you see.'' No target lock-on or enemy lookup is required: the relevant angle is simply between the ship's velocity direction and the bolt's own (lab-frame, post-aberration) flight direction, both already known at spawn time:
+\begin{equation}
+  \cos\theta_{\text{obs}} = \uv n \cdot \uv u_{\text{bolt}}, \qquad D_{\text{bolt}} = \frac{1}{\gamma\left(1-\beta\cos\theta_{\text{obs}}\right)}.
+  \label{eq:bolt-doppler}
+\end{equation}
+This is computed once and cached on the bolt object; it does not update in flight. Note this is evaluated using the ship's $\beta,\gamma,\uv n$ \emph{at the instant of firing} -- physically the correct choice, since that's the source's state of motion at emission. As a side effect, a bolt fired while strafing hard sideways can come out slightly redshifted even though the ship isn't fleeing anything -- this is correct relativistic behavior (a near-transverse-motion effect), not a bug, and is worth calling out in a tutorial tooltip.}
+
+\subsection{Color remap and optional beaming}
+A physically exact spectral shift would move most game-relevant frequencies out of the visible band almost immediately. Following MIT Game Lab's approach, define an explicitly artistic hue remap:
+\begin{equation}
+  h_{\text{render}} = h_0 + k\ln D,
+\end{equation}
+for a tunable constant $k$, wrapped/clamped in HSV space. \textbf{Optional stretch, not required for v1:} relativistic beaming, $I_{\text{obs}} = D^3 I_{\text{source}}$, multiplying sprite brightness/alpha for a ``searchlight'' effect.
+
+\section{Zero Proper Time of Light-Speed Bolts}
+\label{sec:zero-tau}
+
+Along any trajectory at exactly $c$: $ds^2 = -c^2dt^2+|d\vb r|^2=0 \Rightarrow d\tau = ds/c = 0$ identically. Cheap and fun: a ``bolt proper time: 0.000000 s'' readout on an in-flight or just-impacted bolt is a direct numeric echo of Einstein's 1895 thought experiment about riding alongside a light beam.
+
+\section{Per-Frame Rendering Algorithm}
+\label{sec:algorithm}
+
+Keep the authoritative simulation (enemy AI, spawns, collision, scoring) entirely in the lab frame, exactly like an ordinary non-relativistic game, and apply everything above only in a presentation layer that runs after. Once per rendered frame:
+
+\begin{enumerate}[leftmargin=1.7em]
+  \item Advance lab-frame game state (enemy positions $\vb r_i(t)$, spawns, AI, in-flight bolts) with ordinary game logic -- unaware of which render mode is active.
+  \item Read the ship's current lab-frame velocity $\vb v(t)$; compute $\beta,\gamma,\uv n$.
+  \item \textbf{Newtonian mode:} render everything at its plain lab-frame position. Done.
+  \item \textbf{Lorentzian mode, background starfield:} remap each star's angle via aberration, Eq.~\eqref{eq:aberration} (Section~\ref{sec:aberration}, use 2); recolor via the per-frame Doppler formula (Section~\ref{sec:doppler}).
+  \item \textbf{Lorentzian mode, each foreground object} $i$ (enemy, obstacle, in-flight bolt) with locally constant lab-frame velocity $\vb u_i$ and reference state $(\vb r_{i,0}, t_0)$:
+  \begin{enumerate}
+    \item \emph{Solve for simultaneity.} Find lab time $t_i$ at which object $i$'s worldline is simultaneous, in the ship frame, with the current ship-frame render time $t'$. Since $\vb r_i(t)=\vb r_{i,0}+\vb u_i(t-t_0)$, substituting into Eq.~\eqref{eq:lorentz-t} and solving for $t_i$ is closed-form:
+    \begin{equation}
+      t_i = \frac{\dfrac{t'}{\gamma} + \dfrac{\vb v\cdot\vb r_{i,0}}{c^2} - \dfrac{\vb v \cdot \vb u_i}{c^2}\,t_0}{1 - \dfrac{\vb v\cdot\vb u_i}{c^2}}.
+      \label{eq:simultaneity-solve}
+    \end{equation}
+    (For objects with non-negligible lab-frame acceleration within one frame -- e.g.\ a swooping pattern -- fall back to one or two Newton iterations on Eq.~\eqref{eq:lorentz-t} instead; cheap at on-screen object counts.)
+    \item Evaluate $\vb r_i(t_i)$, Lorentz-transform $(\vb r_i(t_i), t_i) \to \vb r_i'$ via Eqs.~\eqref{eq:lorentz-rpar}--\eqref{eq:lorentz-t}.
+    \item Apply the shape-contraction map, Eq.~\eqref{eq:shape-map}, to the sprite silhouette about $\vb r_i'$.
+    \item Compute per-frame Doppler tint via Eq.~\eqref{eq:doppler-general} using this object's transformed angle from $\uv n$ (enemies/obstacles only -- in-flight bolts keep their cached spawn-time tint, Section~\ref{sec:bolt-doppler}).
+  \end{enumerate}
+  \item Scale all lab-authored animation/timer playback rates by $1/\gamma$.
+  \item Accumulate shipboard proper time via Eq.~\eqref{eq:proper-time-integral}; accumulate the lab/mission clock by plain $\Delta t$.
+  \item For a bolt fired this frame: convert the player's chosen ship-frame aim to a lab-frame direction (aberration, Section~\ref{sec:aberration} use 1), spawn it in the lab frame at speed $c$ along that direction, and cache its Doppler tint (Eq.~\eqref{eq:bolt-doppler}) once.
+\end{enumerate}
+
+\decision{Collision detection, scoring, and hit resolution happen entirely on lab-frame coordinates and lab-frame trajectories, before any transform above is applied. ``Did the bolt hit the enemy'' is a frame-invariant local coincidence; doing it in the lab frame sidesteps simultaneity subtleties entirely. The relativity machinery is purely a rendering/HUD layer on top of an otherwise ordinary arcade-game core.}
+
+\section{Out of Scope for v1}
+\label{sec:caveats}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Visual/optical (Terrell--Penrose) rendering.} Permanently out of scope per Section~\ref{sec:measured-vs-visual}, not merely deferred.
+  \item \textbf{Relativistic beaming brightness ($D^3$/$D^4$).} Optional polish, not required for a working v1; add only after Section~\ref{sec:architecture}'s milestones are complete.
+  \item \textbf{Non-inertial corrections beyond the instantaneous-rest-frame approximation.} Acceptable as long as $\vb v(t)$ doesn't change appreciably within one light-crossing time of the visible arena; holds comfortably at 60 fps with ordinary input. No Rindler-coordinate machinery needed.
+\end{itemize}
+
+\section{Software Architecture \& Implementation Plan}
+\label{sec:architecture}
+
+\subsection{Stack}
+C++17, \textbf{raylib} (5.x) for windowing/input/2D drawing, CMake for the build. raylib's own Emscripten support (\texttt{PLATFORM\_WEB}) is used later to produce a browser build for zero-install classroom distribution -- treated as a build target, not a rewrite.
+
+\subsection{Directory layout}
+\begin{lstlisting}
+RelativisticGalaga/
+  CMakeLists.txt
+  src/
+    main.cpp
+    sim/          // lab-frame authoritative game state -- no relativity here
+      Ship.h/.cpp
+      Enemy.h/.cpp
+      Bolt.h/.cpp
+      Spawner.h/.cpp
+      Simulation.h/.cpp
+    relativity/    // pure math, unit-testable, no rendering/raylib deps
+      Vec2.h
+      BoostFrame.h/.cpp
+      Lorentz.h/.cpp        // eq 2-4, eq 9 simultaneity solve
+      Aberration.h/.cpp     // eq 8
+      Doppler.h/.cpp        // eq 10, eq 11
+    render/
+      Renderer.h/.cpp       // orchestrates sec 9 per-frame algorithm
+      Starfield.h/.cpp
+      ColorRemap.h/.cpp     // hue shift from Doppler factor
+    hud/
+      Hud.h/.cpp             // beta/gamma readout, dual clocks
+  assets/
+    sprites/
+    fonts/
+  tests/
+    test_lorentz.cpp
+    test_aberration.cpp
+    test_doppler.cpp
+\end{lstlisting}
+
+\subsection{Core types (interface sketch)}
+\begin{lstlisting}
+// relativity/Vec2.h
+struct Vec2 {
+    float x, y;
+    Vec2 operator+(Vec2) const; Vec2 operator-(Vec2) const;
+    Vec2 operator*(float) const; float dot(Vec2) const;
+    float length() const; Vec2 normalized() const;
+};
+
+// relativity/BoostFrame.h
+struct BoostFrame {
+    Vec2  v;       // ship lab-frame velocity this instant
+    float beta;
+    float gamma;
+    Vec2  n;       // unit vector, v/|v| (undefined at beta==0 -- guard it)
+    static BoostFrame fromVelocity(Vec2 v, float c);
+};
+
+// relativity/Lorentz.h
+namespace relativity {
+    // Eq 2-4: transform a lab-frame event into the ship frame.
+    struct Event { Vec2 r; float t; };
+    Event toShipFrame(Event labEvent, const BoostFrame& f);
+
+    // Eq 9: for an object at r0 with constant lab velocity u since t0,
+    // find the lab time whose ship-frame image has ship-time == tPrime.
+    float solveSimultaneousLabTime(Vec2 r0, Vec2 u, float t0,
+                                    float tPrime, const BoostFrame& f, float c);
+
+    // Eq 5: sprite-shape squash, corners given relative to object reference point.
+    Vec2 contractOffset(Vec2 deltaR, const BoostFrame& f);
+}
+
+// relativity/Aberration.h
+namespace relativity {
+    // Eq 8. dir: unit vector. toShip=true converts lab angle -> ship angle,
+    // false converts ship angle -> lab angle (used for firing direction).
+    Vec2 aberrate(Vec2 dir, const BoostFrame& f, bool toShip);
+}
+
+// relativity/Doppler.h
+namespace relativity {
+    // Eq 10/11. cosThetaObs = n.dot(rayDirection_from_source_to_observer).
+    float dopplerFactor(float cosThetaObs, const BoostFrame& f);
+    Color hueShiftFromDoppler(Color base, float dopplerFactor, float k);
+}
+\end{lstlisting}
+
+\subsection{Milestones}
+Each milestone should be a separately committable, separately testable unit. A coding agent should not start milestone $N{+}1$ until $N$'s acceptance check passes.
+
+\begin{description}[leftmargin=2.2em,style=nextline]
+  \item[\milestone{M0 -- Scaffolding}] CMake project links raylib and opens a window with a title screen. \emph{Acceptance:} builds on desktop, runs, closes cleanly.
+  \item[\milestone{M1 -- Newtonian gameplay}] Full classic loop in \texttt{sim/} only: ship strafing, cannon fire (Galilean velocity addition), enemy spawn/movement patterns, collision, scoring, game over/restart. No \texttt{relativity/} code is touched. \emph{Acceptance:} fully playable ``ordinary Galaga.''
+  \item[\milestone{M2 -- Boost state, no visual change yet}] Add ship ``warp throttle'' as a velocity component distinct from strafe; compute a \texttt{BoostFrame} every frame and print $\beta,\gamma$ on the HUD as plain text. Rendering is still 100\% lab-frame/Newtonian. \emph{Acceptance:} HUD numbers respond live to throttle input; gameplay visuals unchanged.
+  \item[\milestone{M3 -- Relativity math, unit-tested}] Implement all of \texttt{relativity/} as pure functions (no raylib dependency) with unit tests. Required assertions (Section~\ref{sec:testing}). \emph{Acceptance:} test suite green.
+  \item[\milestone{M4 -- Foreground transform wired in}] When Lorentzian mode is on, apply \texttt{solveSimultaneousLabTime} + \texttt{toShipFrame} + \texttt{contractOffset} (Section~\ref{sec:algorithm} step 5) to enemies, obstacles, and in-flight bolts before drawing. \emph{Acceptance:} toggling modes visibly repositions and squashes the enemy formation along the boost axis as throttle increases; classic Newtonian mode is bit-for-bit unchanged when toggled back.
+  \item[\milestone{M5 -- Doppler, aberration skybox, dilation, clocks}] Starfield aberration remap (Section~\ref{sec:aberration} use 2) and per-frame Doppler recolor for enemies/stars; bolt spawn-time tint (Eq.~\eqref{eq:bolt-doppler}); global $1/\gamma$ animation-rate scaling; dual HUD clocks (Eq.~\eqref{eq:proper-time-integral}). \emph{Acceptance:} starfield visibly bunches forward and blueshifts as throttle increases; bolts show geometry-dependent tint; the two HUD clocks visibly diverge under sustained high throttle.
+  \item[\milestone{M6 -- Web build}] Add the Emscripten/\texttt{PLATFORM\_WEB} CMake target per raylib's documented pattern; verify keyboard input and canvas sizing in-browser. \emph{Acceptance:} game runs at a shareable static URL with no install step.
+\end{description}
+
+Relativistic beaming brightness ($D^3$) is optional polish after M6, per Section~\ref{sec:caveats}, and is not a milestone.
+
+\subsection{Testing and validation}
+\label{sec:testing}
+\texttt{relativity/} functions are pure (no I/O, no raylib types) specifically so they can be unit-tested without a graphics context. Minimum required test assertions:
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Identity at $\beta=0$:} \texttt{toShipFrame} returns its input unchanged (within floating-point tolerance) when \texttt{BoostFrame} is built from a zero velocity.
+  \item \textbf{Round trip:} transforming lab $\to$ ship $\to$ lab (via the inverse, $\vb v \to -\vb v$) recovers the original event.
+  \item \textbf{Speed invariance:} for any input direction and any $\beta<1$, aberrating a unit vector and reconstructing the corresponding light-ray velocity yields speed exactly $c$ in both frames (checks Eq.~\eqref{eq:aberration} was derived/implemented consistently with velocity addition at $u=c$).
+  \item \textbf{Doppler special cases:} Eq.~\eqref{eq:doppler-general} at $\theta_{\text{obs}}=0,\pi,\pi/2$ matches the three closed-form special cases in Section~\ref{sec:doppler} to floating-point tolerance.
+  \item \textbf{Zero proper time:} for a trajectory advancing at exactly $c$, the accumulated proper time (via the spacetime interval) stays at $0$ to floating-point tolerance regardless of elapsed lab time.
+\end{itemize}
+
+\section*{Appendix: Formula Quick Reference}
+\addcontentsline{toc}{section}{Appendix: Formula Quick Reference}
+
+\begin{center}
+\begin{tabular}{@{}p{4.3cm}p{9.2cm}@{}}
+\toprule
+\textbf{Quantity} & \textbf{Formula} \\
+\midrule
+Lorentz factor & $\gamma = 1/\sqrt{1-\beta^2}$ \\[4pt]
+Lorentz transform & $\vb r'_\ppar=\gamma(\vb r_\ppar-\vb v t)$, \ $\vb r'_\pperp=\vb r_\pperp$, \ $t'=\gamma(t-\vb v\cdot\vb r/c^2)$ \\[4pt]
+Length contraction & $L' = L_0/\gamma$ along $\uv n$; unchanged transverse to $\uv n$ \\[4pt]
+Time dilation & $\Delta t' = \gamma\,\Delta\tau_{\text{lab}}$; \quad $\tau_{\text{ship}}(t)=\int_0^t dt''/\gamma(t'')$ \\[4pt]
+Velocity addition & $u'_\ppar = \dfrac{u_\ppar-v}{1-\vb u\cdot\vb v/c^2}$, \quad $\vb u'_\pperp = \dfrac{\vb u_\pperp}{\gamma(1-\vb u\cdot\vb v/c^2)}$ \\[8pt]
+Aberration (uses: fire angle, skybox only) & $\cos\theta' = \dfrac{\cos\theta-\beta}{1-\beta\cos\theta}$ \\[8pt]
+Doppler (general) & $f_{\text{obs}} = \dfrac{f_0}{\gamma(1-\beta\cos\theta_{\text{obs}})} = D f_0$ \\[8pt]
+Doppler (head-on / receding) & $f_{\text{obs}} = f_0\sqrt{\dfrac{1\pm\beta}{1\mp\beta}}$ \\[8pt]
+Doppler (transverse) & $f_{\text{obs}} = f_0/\gamma$ \\[4pt]
+Bolt spawn-time tint & $\cos\theta_{\text{obs}}=\uv n\cdot\uv u_{\text{bolt}}$, cached once, Eq.~\eqref{eq:bolt-doppler} \\[4pt]
+Beaming (optional, post-M6) & $I_{\text{obs}} = D^3 I_{\text{source}}$ \\[4pt]
+Light-bolt proper time & $d\tau = ds/c = 0$ identically \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

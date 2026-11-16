@@ -1,0 +1,50 @@
+# ---- Build output ----
+# Out-of-source CMake build dirs (raylib is fetched into build/_deps at configure time)
+/build/
+/build-*/
+/cmake-build-*/
+# In-source CMake artifacts, in case anyone configures in the root
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+compile_commands.json
+_deps/
+/Makefile
+/RelGalaga
+/test_relativity
+*.o
+*.obj
+*.a
+*.so
+*.exe
+
+# ---- Source art pack ----
+# Kenney "Space Shooter Redux" (CC0).  Only the sprites/sounds actually used
+# are moved into assets/ under entity-specific names; the full pack stays local.
+/SpaceShooterRedux/
+
+# ---- LaTeX byproducts (design doc) ----
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+
+# ---- Editors / IDEs ----
+.vscode/
+.idea/
+.cache/
+*.cbp
+*.layout
+*.depend
+*.swp
+*~
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
