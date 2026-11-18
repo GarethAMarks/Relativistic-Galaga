@@ -32,8 +32,11 @@ void Starfield::draw(const BoostFrame& boost, bool lorentzianMode, Vec2 shipPos)
             float dist = delta.length();
             if (dist > 1.0f) {
                 // Aberrate the direction: stars bunch toward the forward hemisphere.
+                // aberrate() transforms PHOTON (propagation) directions, so
+                // transform the light travelling from the star towards the
+                // ship (-dir), then flip back to get the apparent star direction.
                 Vec2 dir    = delta / dist;
-                Vec2 abDir  = relativity::aberrate(dir, boost, /*toShip=*/true);
+                Vec2 abDir  = -relativity::aberrate(-dir, boost, /*toShip=*/true);
                 drawX = shipPos.x + abDir.x * dist;
                 drawY = shipPos.y + abDir.y * dist;
 

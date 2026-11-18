@@ -37,6 +37,11 @@ add_executable(RelGalaga
     src/render/Renderer.cpp
     src/render/Starfield.cpp
     src/render/ColorRemap.cpp
+    src/render/DrawUtil.cpp
+    src/panels/PanelKit.cpp
+    src/panels/InfoPanels.cpp
+    src/panels/ScienceDeck.cpp
+    src/panels/HowToPlayDeck.cpp
     src/hud/Hud.cpp
     src/audio/Audio.cpp
     src/audio/Synth.cpp

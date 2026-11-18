@@ -56,6 +56,7 @@ src/
   render/       drawing, sprite loading, starfield
   hud/          on-screen readouts
   audio/        sound effects and the procedurally generated music
+  panels/       click-through "How to Play" and "The Science" screens
 tests/          unit tests for src/relativity
 assets/         sprites and sound effects
 ```
@@ -68,4 +69,3 @@ Sprites and sound effects in `assets/` are from Kenney's
 [Space Shooter Redux](https://kenney.nl/assets/space-shooter-redux) pack
 (CC0; see `assets/LICENSE_kenney_space_shooter_redux.txt`).
 raylib is distributed under the zlib/libpng licence.
-# Relativistic-Galaga

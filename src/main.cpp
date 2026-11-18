@@ -6,11 +6,12 @@
 #include "render/Starfield.h"
 #include "hud/Hud.h"
 #include "audio/Audio.h"
+#include "panels/InfoPanels.h"
 #include <algorithm>
 #include <string>
 #include <vector>
 
-enum class AppState { TITLE, PLAYING, ENTERING_NAME };
+enum class AppState { TITLE, PLAYING, ENTERING_NAME, PANELS };
 
 struct LeaderEntry {
     std::string name;
@@ -29,7 +30,7 @@ int main() {
 
     float     c_game          = 600.0f;
     bool      lorentzianMode  = true;   // fixed for the duration of a run
-    int       menuChoice      = 0;      // 0 = Lorentzian, 1 = Newtonian
+    int       menuChoice      = 0;      // 0 = Lorentzian, 1 = Newtonian, 2 = How to Play, 3 = The Science
     float     deathTimer      = 0.0f;
     AppState  state           = AppState::TITLE;
 
@@ -42,6 +43,7 @@ int main() {
     Renderer   renderer;
     Starfield  stars;
     Hud        hud;
+    InfoPanels infoPanels;   // "How to Play" / "The Science"
 
     std::vector<LeaderEntry> leaderboard;
     std::string nameInput;
@@ -64,40 +66,55 @@ int main() {
         switch (state) {
 
         case AppState::TITLE: {
-            if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_DOWN)) menuChoice ^= 1;
-            bool start = false;
-            if (IsKeyPressed(KEY_ENTER)) start = true;
-            if (IsKeyPressed(KEY_N)) { menuChoice = 1; start = true; }
+            constexpr int MENU_N = 4;
+            const char* items[MENU_N] = { "Start",
+                                          "Start  (Newtonian comparison)",
+                                          "How to Play",
+                                          "The Science" };
+            const Color itemCol[MENU_N] = { YELLOW, SKYBLUE, Color{255, 190, 110, 255},
+                                            Color{140, 230, 160, 255} };
+            const int   itemSize[MENU_N] = { 24, 20, 20, 20 };
+            auto itemY = [](int i) { return 172 + i * 36; };
+
+            if (IsKeyPressed(KEY_UP))   menuChoice = (menuChoice + MENU_N - 1) % MENU_N;
+            if (IsKeyPressed(KEY_DOWN)) menuChoice = (menuChoice + 1) % MENU_N;
+            bool activate = IsKeyPressed(KEY_ENTER);
+            if (IsKeyPressed(KEY_N)) { menuChoice = 1; activate = true; }
+            // Mouse: hover selects, click activates.
+            Vector2 mouse = GetMousePosition();
+            for (int i = 0; i < MENU_N; ++i) {
+                Rectangle r = { 76.0f, (float)itemY(i) - 4.0f,
+                                (float)MeasureText(items[i], itemSize[i]) + 36.0f, 32.0f };
+                if (CheckCollisionPointRec(mouse, r)) {
+                    if (GetMouseDelta().x != 0.0f || GetMouseDelta().y != 0.0f) menuChoice = i;
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { menuChoice = i; activate = true; }
+                }
+            }
             if (IsKeyPressed(KEY_ESCAPE)) quit = true;
-            if (start) {
-                lorentzianMode = (menuChoice == 0);
-                sim.reset(c_game);
-                deathTimer = 0.0f;
-                state = AppState::PLAYING;
+            if (activate) {
+                if (menuChoice >= 2) {
+                    infoPanels.open(menuChoice == 2 ? howToPlayDeck() : scienceDeck());
+                    state = AppState::PANELS;
+                } else {
+                    lorentzianMode = (menuChoice == 0);
+                    sim.reset(c_game);
+                    deathTimer = 0.0f;
+                    state = AppState::PLAYING;
+                }
             }
 
-            // Left column: game info + mode menu
+            // Left column: game info + menu
             DrawText("RELATIVISTIC GALAGA",      80, 70, 36, YELLOW);
             DrawText("A special-relativity demo", 92, 116, 20, LIGHTGRAY);
 
-            const char* items[2] = { "Start  (Lorentzian)",
-                                     "Start  (Newtonian, for comparison)" };
-            const Color itemCol[2] = { YELLOW, SKYBLUE };
-            for (int i = 0; i < 2; ++i) {
-                int y = 180 + i * 40;
+            for (int i = 0; i < MENU_N; ++i) {
                 bool sel = (i == menuChoice);
-                if (sel) DrawText(">", 80, y, 24, itemCol[i]);
-                DrawText(items[i], 104, y, i == 0 ? 24 : 20,
-                         sel ? itemCol[i] : DARKGRAY);
+                if (sel) DrawText(">", 80, itemY(i), 24, itemCol[i]);
+                DrawText(items[i], 104, itemY(i), itemSize[i], sel ? itemCol[i] : DARKGRAY);
             }
-            DrawText("Up/Down: choose   ENTER: start", 92, 272, 16, GRAY);
+            DrawText("Up/Down or mouse: choose   ENTER: select", 92, 324, 16, GRAY);
             DrawText(TextFormat("c = %.0f px/s  ([ / ] to adjust)", c_game),
-                     92, 304, 18, GREEN);
-
-            DrawText("Enemies",                      92, 360, 18, LIGHTGRAY);
-            DrawText("Drone    1 hit    20 pts",     92, 384, 16, SKYBLUE);
-            DrawText("Fighter  2 hits   40 pts",     92, 404, 16, Color{255, 180, 140, 255});
-            DrawText("Heavy    5 hits  100 pts",     92, 424, 16, Color{192, 140, 255, 255});
+                     92, 352, 18, GREEN);
 
             DrawText("Arrows: move   Space: fire   Esc: quit", 92, 510, 18, DARKGRAY);
             DrawText(TextFormat("M: music %s", audio.musicOn() ? "on" : "off"),
@@ -148,6 +165,13 @@ int main() {
                     state = AppState::ENTERING_NAME;
                 }
             }
+            break;
+        }
+
+        case AppState::PANELS: {
+            stars.draw(BoostFrame::fromVelocity({0.0f, 0.0f}, c_game), false, {400.0f, 300.0f});
+            if (!infoPanels.update()) state = AppState::TITLE;
+            else infoPanels.draw(assets);
             break;
         }
 

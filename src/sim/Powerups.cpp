@@ -6,7 +6,7 @@ void BoostPowerup::activate(Simulation& sim) {
 }
 
 void HealPowerup::activate(Simulation& sim) {
-    sim.applyHeal(1);
+    sim.applyHeal(HP);
 }
 
 void TwinShotPowerup::activate(Simulation& sim) {
